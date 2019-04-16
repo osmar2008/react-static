@@ -4,7 +4,10 @@ import {
   createPool,
   getRoutePath,
   pathJoin,
-  isPrefetchableRoute,
+  getFullRouteData,
+  makePathAbsolute,
+  getHooks,
+  reduceHooks,
 } from './utils'
 import onVisible from './utils/Visibility'
 
@@ -14,23 +17,46 @@ export const routeErrorByPath = {}
 export const sharedDataByHash = {}
 const inflightRouteInfo = {}
 const inflightPropHashes = {}
+let prefetchExcludes = []
+
+export const addPrefetchExcludes = excludes => {
+  if (!Array.isArray(excludes)) {
+    throw new Error('Excludes must be an array of strings/regex!')
+  }
+  prefetchExcludes = [...prefetchExcludes, ...excludes]
+}
 
 const requestPool = createPool({
   concurrency: Number(process.env.REACT_STATIC_PREFETCH_RATE),
 })
 
 // Plugins
-export const plugins = []
+export const pluginHooks = []
 export const registerPlugins = newPlugins => {
-  plugins.splice(0, Infinity, ...newPlugins)
+  pluginHooks.splice(0, Infinity, ...newPlugins)
 }
 
 // Templates
 export const templates = {}
 export const templatesByPath = {}
 export const templateErrorByPath = {}
-export const templateUpdated = { cb: () => {} }
-export const registerTemplates = (tmps, notFoundKey) => {
+export const onReloadTemplates = fn => {
+  onReloadTemplates.listeners.push(fn)
+  return () => {
+    onReloadTemplates.listeners = onReloadTemplates.listeners.filter(
+      d => d !== fn
+    )
+  }
+}
+onReloadTemplates.listeners = []
+
+export const registerTemplates = async (tmps, notFoundKey) => {
+  Object.keys(templatesByPath).forEach(key => {
+    delete templatesByPath[key]
+  })
+  Object.keys(templateErrorByPath).forEach(key => {
+    delete templateErrorByPath[key]
+  })
   Object.keys(templates).forEach(key => {
     delete templates[key]
   })
@@ -38,14 +64,42 @@ export const registerTemplates = (tmps, notFoundKey) => {
     templates[key] = tmps[key]
   })
   templatesByPath['404'] = templates[notFoundKey]
-  templateUpdated.cb()
+
+  if (
+    process.env.NODE_ENV === 'development' &&
+    typeof document !== 'undefined'
+  ) {
+    await prefetch(window.location.pathname)
+  }
+
+  onReloadTemplates.listeners.forEach(fn => fn())
+
+  if (typeof document !== 'undefined') {
+    console.log('React Static: Templates Reloaded')
+  }
 }
+
 export const registerTemplateForPath = (path, template) => {
   path = getRoutePath(path)
   templatesByPath[path] = templates[template]
 }
 
-init()
+export const onReloadClientData = fn => {
+  Object.keys(routeErrorByPath).forEach(key => {
+    delete routeErrorByPath[key]
+  })
+  onReloadClientData.listeners.push(fn)
+  return () => {
+    onReloadClientData.listeners = onReloadClientData.listeners.filter(
+      d => d !== fn
+    )
+  }
+}
+onReloadClientData.listeners = []
+
+if (typeof document !== 'undefined') {
+  init()
+}
 
 // When in development, init a socket to listen for data changes
 // When the data changes, we invalidate and reload all of the route data
@@ -60,13 +114,11 @@ function init() {
         } = await axios.get('/__react-static__/getMessagePort')
         const socket = io(`http://localhost:${port}`)
         socket.on('connect', () => {
-          console.log(
-            'React-Static data hot-loader websocket connected. Listening for data changes...'
-          )
+          // Do nothing
         })
         socket.on('message', ({ type }) => {
-          if (type === 'reloadRoutes') {
-            reloadRouteData()
+          if (type === 'reloadClientData') {
+            reloadClientData()
           }
         })
       } catch (err) {
@@ -79,7 +131,9 @@ function init() {
     run()
   }
 
-  if (process.env.REACT_STATIC_DISABLE_PRELOAD === 'false') startPreloader()
+  if (process.env.REACT_STATIC_DISABLE_PRELOAD === 'false') {
+    startPreloader()
+  }
 }
 
 function startPreloader() {
@@ -88,10 +142,9 @@ function startPreloader() {
       const els = [].slice.call(document.getElementsByTagName('a'))
       els.forEach(el => {
         const href = el.getAttribute('href')
-        if (href) {
-          onVisible(el, () => {
-            prefetch(href)
-          })
+        const shouldPrefetch = !(el.getAttribute('prefetch') === 'false')
+        if (href && shouldPrefetch) {
+          onVisible(el, () => prefetch(href))
         }
       })
     }
@@ -100,7 +153,8 @@ function startPreloader() {
   }
 }
 
-export function reloadRouteData() {
+async function reloadClientData() {
+  console.log('React Static: Reloading Data...')
   // Delete all cached data
   ;[
     routeInfoByPath,
@@ -113,8 +167,11 @@ export function reloadRouteData() {
       delete part[key]
     })
   })
-  // Force each RouteData component to reload
-  global.reloadAll()
+
+  // Prefetch the current route's data before you reload routes
+  await prefetch(window.location.pathname)
+
+  onReloadClientData.listeners.forEach(fn => fn())
 }
 
 export async function getRouteInfo(path, { priority } = {}) {
@@ -154,13 +211,8 @@ export async function getRouteInfo(path, { priority } = {}) {
         (process.env.REACT_STATIC_DISABLE_ROUTE_PREFIXING === 'true'
           ? process.env.REACT_STATIC_SITE_ROOT
           : process.env.REACT_STATIC_PUBLIC_PATH) || '/'
-      const cacheBuster = process.env.REACT_STATIC_CACHE_BUST
-        ? `?${process.env.REACT_STATIC_CACHE_BUST}`
-        : ''
-      const getPath = `${routeInfoRoot}${pathJoin(
-        path,
-        'routeInfo.json'
-      )}${cacheBuster}`
+
+      const getPath = `${routeInfoRoot}${pathJoin(path, 'routeInfo.json')}`
 
       // If this is a priority call bypass the queue
       if (priority) {
@@ -178,6 +230,13 @@ export async function getRouteInfo(path, { priority } = {}) {
   } catch (err) {
     // If there was an error, mark the path as errored
     routeErrorByPath[path] = true
+    // Unless we already fetched the 404 page,
+    // try to load info for the 404 page
+    if (!routeInfoByPath['404'] && !routeErrorByPath['404']) {
+      getRouteInfo('404', { priority })
+      return
+    }
+
     return
   }
   if (!priority) {
@@ -204,14 +263,12 @@ export async function prefetchData(path, { priority } = {}) {
 
   // Defer to the cache first. In dev mode, this should already be available from
   // the call to getRouteInfo
-  if (routeInfo.fullData) {
-    return routeInfo.fullData
+  if (routeInfo.sharedData) {
+    return getFullRouteData(routeInfo)
   }
 
   // Request and build the props one by one
-  routeInfo.fullData = {
-    ...(routeInfo.data || {}),
-  }
+  routeInfo.sharedData = {}
 
   // Request the template and loop over the routeInfo.sharedHashesByProp, requesting each prop
   await Promise.all(
@@ -222,25 +279,21 @@ export async function prefetchData(path, { priority } = {}) {
       if (!sharedDataByHash[hash]) {
         // Reuse request for duplicate inflight requests
         try {
+          const staticDataPath = pathJoin(
+            process.env.REACT_STATIC_ASSETS_PATH,
+            `staticData/${hash}.json`
+          )
+          const absoluteStaticDataPath = makePathAbsolute(staticDataPath)
+
           // If priority, get it immediately
           if (priority) {
-            const { data: prop } = await axios.get(
-              pathJoin(
-                process.env.REACT_STATIC_ASSETS_PATH,
-                `staticData/${hash}.json`
-              )
-            )
+            const { data: prop } = await axios.get(absoluteStaticDataPath)
             sharedDataByHash[hash] = prop
           } else {
             // Non priority, share inflight requests and use pool
             if (!inflightPropHashes[hash]) {
               inflightPropHashes[hash] = requestPool.add(() =>
-                axios.get(
-                  pathJoin(
-                    process.env.REACT_STATIC_ASSETS_PATH,
-                    `staticData/${hash}.json`
-                  )
-                )
+                axios.get(absoluteStaticDataPath)
               )
             }
             const { data: prop } = await inflightPropHashes[hash]
@@ -260,12 +313,11 @@ export async function prefetchData(path, { priority } = {}) {
       }
 
       // Otherwise, just set it as the key
-      routeInfo.fullData[key] = sharedDataByHash[hash]
+      routeInfo.sharedData[key] = sharedDataByHash[hash]
     })
   )
 
-  // Return the props
-  return routeInfo.fullData
+  return getFullRouteData(routeInfo)
 }
 
 export async function prefetchTemplate(path, { priority } = {}) {
@@ -275,7 +327,9 @@ export async function prefetchTemplate(path, { priority } = {}) {
   const routeInfo = await getRouteInfo(path, { priority })
 
   if (routeInfo) {
-    registerTemplateForPath(path, routeInfo.template)
+    // Make sure to use the path as defined in the routeInfo object here.
+    // This will make sure 404 route info returned from getRouteInfo is handled correctly.
+    registerTemplateForPath(routeInfo.path, routeInfo.template)
   }
 
   // Preload the template if available
@@ -285,6 +339,12 @@ export async function prefetchTemplate(path, { priority } = {}) {
     templateErrorByPath[path] = true
     return
   }
+
+  // If we didn't no route info was return, there is nothing more to do here
+  if (!routeInfo) {
+    return Template
+  }
+
   if (!routeInfo.templateLoaded && Template.preload) {
     if (priority) {
       await Template.preload()
@@ -327,9 +387,56 @@ export async function prefetch(path, options = {}) {
   return data
 }
 
-export function getCurrentRoutePath() {
-  // If in the browser, use the window
-  if (typeof document !== 'undefined') {
-    return getRoutePath(decodeURIComponent(window.location.href))
+export function isPrefetchableRoute(path) {
+  // when rendering static pages we dont need this at all
+  if (typeof document === 'undefined') {
+    return false
   }
+
+  if (
+    prefetchExcludes.some(exclude => {
+      if (typeof exclude === 'string' && path.startsWith(exclude)) {
+        return true
+      }
+      if (typeof exclude === 'object' && exclude.test(path)) {
+        return true
+      }
+      return false
+    })
+  ) {
+    return false
+  }
+
+  const { location } = document
+  let link
+
+  try {
+    link = new URL(path, location.href)
+  } catch (e) {
+    // Return false on invalid URLs
+    return false
+  }
+
+  // if the hostname/port/protocol doesn't match its not a route link
+  if (location.host !== link.host || location.protocol !== link.protocol) {
+    return false
+  }
+
+  // deny all files with extension other than .html
+  if (link.pathname.includes('.') && !link.pathname.includes('.html')) {
+    return false
+  }
+
+  return true
+}
+
+export const plugins = {
+  Root: Comp => {
+    const hooks = getHooks(pluginHooks, 'Root')
+    return reduceHooks(hooks, { sync: true })(Comp)
+  },
+  Routes: Comp => {
+    const hooks = getHooks(pluginHooks, 'Routes')
+    return reduceHooks(hooks, { sync: true })(Comp)
+  },
 }

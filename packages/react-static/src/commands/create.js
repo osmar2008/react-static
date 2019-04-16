@@ -19,7 +19,9 @@ const typeExample = 'React Static Example'
 
 const templatesDir = path.resolve(__dirname, '../../templates')
 
-const templates = fs.readdirSync(templatesDir).filter(d => !d.startsWith('.'))
+const templates = fs
+  .readdirSync(templatesDir)
+  .filter(d => !d.startsWith('.') && !d.startsWith('README'))
 
 export default (async function create({ name, template, isCLI }) {
   const isYarn = shouldUseYarn()
@@ -76,8 +78,8 @@ export default (async function create({ name, template, isCLI }) {
     )
   }
 
-  time(chalk.green(`=> [\u2713] Project "${name}" created`))
-  console.log('=> Creating new react-static project...')
+  time(chalk.green(`[\u2713] Project "${name}" created`))
+  console.log('Creating new react-static project...')
 
   if (template === typeLocal) {
     templateType = typeLocal
@@ -170,7 +172,7 @@ export default (async function create({ name, template, isCLI }) {
 
   if (isCLI) {
     console.log(
-      `=> Installing dependencies with: ${
+      `Installing dependencies with: ${
         isYarn
           ? chalk.hex(ChalkColor.yarn)('Yarn')
           : chalk.hex(ChalkColor.npm)('NPM')
@@ -181,10 +183,10 @@ export default (async function create({ name, template, isCLI }) {
     console.log('')
   }
 
-  timeEnd(chalk.green(`=> [\u2713] Project "${name}" created`))
+  timeEnd(chalk.green(`[\u2713] Project "${name}" created`))
 
   console.log(`
-  ${chalk.green('=> To get started:')}
+  ${chalk.green('To get started:')}
 
     cd "${name}" ${
     !isCLI

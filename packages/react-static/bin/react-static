@@ -1,23 +1,33 @@
 #!/usr/bin/env node
-
-const pkg = require('../package.json')
+const path = require('path')
+//
 
 init()
 
 function init() {
+  const pkg = require('../package.json')
+  let packageConfig = {}
+  try {
+    packageConfig = require(path.resolve(process.cwd(), 'package.json'))
+    packageConfig = packageConfig['react-static'] || {}
+  } catch (err) {
+    //
+  }
   const argv = require('minimist')(process.argv.slice(2))
 
   const commands = argv._
   const help = argv.help || argv.h || argv.H
   const options = {
     version: argv.version || argv.v || argv.V,
-    config: argv.config || argv.c || argv.C,
+    configPath: argv.config || argv.c || argv.C,
     name: argv.name || argv.n || argv.N,
     template: argv.template || argv.t || argv.T,
     staging: argv.staging || argv.s || argv.S,
     debug: argv.debug || argv.d || argv.D,
     incremental: argv.incremental || argv.i || argv.I,
+    analyze: argv.analyze || argv.a || argv.A,
     isCLI: true,
+    packageConfig,
   }
 
   if (options.version) {
@@ -152,6 +162,7 @@ Options:
   -c, --config <path>   The path to a custom static.config.js
   -s, --staging         Turn on staging mode
   -d, --debug           Turn on debug mode
+  -a, --analyze         Turn on the bundle analyzer
 
 Examples:
   react-static bundle
@@ -159,6 +170,8 @@ Examples:
   react-static bundle -c path/to/my/static.config.js
   react-static bundle --debug
   react-static bundle -d
+  react-static build --analyze
+  react-static build -a
 `)
     return
   }
@@ -178,6 +191,7 @@ Options:
   -c, --config <path>   The path to a custom static.config.js
   -s, --staging         Turn on staging mode
   -d, --debug           Turn on debug mode
+  -a, --analyze         Turn on the bundle analyzer
 
 Examples:
   react-static build
@@ -185,6 +199,8 @@ Examples:
   react-static build -c path/to/my/static.config.js
   react-static build --debug
   react-static build -d
+  react-static build --analyze
+  react-static build -a
 `)
     return
   }

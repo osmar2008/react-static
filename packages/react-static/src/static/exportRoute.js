@@ -7,7 +7,8 @@ import nodePath from 'path'
 import fs from 'fs-extra'
 
 import Redirect from './components/Redirect'
-import { makePathAbsolute, makeHookReducer } from '../utils'
+import plugins from './plugins'
+import { makePathAbsolute } from '../utils'
 import { absoluteToRelativeChunkName } from '../utils/chunkBuilder'
 
 import { makeHtmlWithMeta } from './components/HtmlWithMeta'
@@ -20,15 +21,18 @@ let cachedBasePath
 let cachedHrefReplace
 let cachedSrcReplace
 
-export default (async function exportRoute({
-  config,
-  Comp,
-  DocumentTemplate,
-  route,
-  siteData,
-  clientStats,
-  incremental,
-}) {
+export default (async function exportRoute(state) {
+  const {
+    config,
+    DocumentTemplate,
+    route,
+    siteData,
+    clientStats,
+    incremental,
+  } = state
+
+  let { Comp } = state
+
   const {
     sharedHashesByProp,
     template,
@@ -83,8 +87,14 @@ export default (async function exportRoute({
     siteData,
   }
 
+  state = {
+    ...state,
+    routeInfo,
+    embeddedRouteInfo,
+  }
+
   // Make a place to collect chunks, meta info and head tags
-  const renderMeta = {}
+  const meta = {}
   const chunkNames = []
   let head = {}
   let clientScripts = []
@@ -93,11 +103,9 @@ export default (async function exportRoute({
 
   let FinalComp
 
-  // Get the react component from the Comp and
-  // pass it the export context. This uses
-  // reactContext under the hood to pass down
-  // the exportContext, since react's new context
-  // api doesn't survive across bundling.
+  // Get the react component from the Comp and pass it the export context. This
+  // uses reactContext under the hood to pass down the exportContext, since
+  // react's new context api doesn't survive across bundling.
   Comp = config.disableRuntime ? Comp : Comp(embeddedRouteInfo)
 
   if (route.redirect) {
@@ -106,7 +114,9 @@ export default (async function exportRoute({
     FinalComp = props => (
       <ReportChunks
         report={chunkName => {
-          // if we are building to a absolute path we must make the detected chunkName relative and matching to the one we set in generateTemplates
+          // if we are building to a absolute path we must make the detected
+          // chunkName relative and matching to the one we set in
+          // generateTemplates
           if (!config.paths.DIST.startsWith(config.paths.ROOT)) {
             chunkName = absoluteToRelativeChunkName(
               config.paths.ROOT,
@@ -127,6 +137,7 @@ export default (async function exportRoute({
     const appHtml = renderToString(comp)
     const { scripts, stylesheets, css } = flushChunks(clientStats, {
       chunkNames,
+      outputPath: config.paths.DIST,
     })
 
     clientScripts = scripts
@@ -152,19 +163,18 @@ export default (async function exportRoute({
 
   let appHtml
 
+  state = {
+    ...state,
+    meta,
+  }
+
   try {
-    const beforeRenderToElementHook = makeHookReducer(
-      config.plugins,
-      'beforeRenderToElement'
-    )
-    FinalComp = await beforeRenderToElementHook(FinalComp, {
-      config,
-      meta: renderMeta,
-    })
+    FinalComp = await plugins.beforeRenderToElement(FinalComp, state)
 
     if (config.renderToElement) {
       throw new Error(
-        `config.renderToElement has been deprecated in favor of the 'beforeRenderToElement' or 'beforeRenderToHtml' hooks instead.`
+        `config.renderToElement has been deprecated in favor of the ` +
+          `'beforeRenderToElement' or 'beforeRenderToHtml' hooks instead.`
       )
     }
 
@@ -172,60 +182,46 @@ export default (async function exportRoute({
 
     // Run the beforeRenderToHtml hook
     // Rum the Html hook
-    const beforeRenderToHtml = makeHookReducer(
-      config.plugins,
-      'beforeRenderToHtml'
-    )
-    RenderedComp = await beforeRenderToHtml(RenderedComp, {
-      config,
-      meta: renderMeta,
-    })
+    RenderedComp = await plugins.beforeRenderToHtml(RenderedComp, state)
 
     if (config.renderToHtml) {
       throw new Error(
-        `config.renderToHtml has been deprecated in favor of the 'beforeRenderToHtml' or 'beforeHtmlToDocument' hooks instead.`
+        `config.renderToHtml has been deprecated in favor of the ` +
+          `'beforeRenderToHtml' or 'beforeHtmlToDocument' hooks instead.`
       )
     }
 
+    console.log('Time to render to string and extract', RenderedComp)
+
     appHtml = renderToStringAndExtract(RenderedComp)
 
-    // Rum the beforeHtmlToDocument hook
-    const beforeHtmlToDocument = makeHookReducer(
-      config.plugins,
-      'beforeHtmlToDocument'
-    )
-    appHtml = await beforeHtmlToDocument(appHtml, { config, meta: renderMeta })
+    appHtml = await plugins.beforeHtmlToDocument(appHtml, state)
   } catch (error) {
+    if (error.then) {
+      error.message =
+        'Components are not allowed to suspend during static export. Please ' +
+        'make its data available synchronously and try again!'
+    }
     error.message = `Failed exporting HTML for URL ${route.path} (${
-      route.component
+      route.template
     }): ${error.message}`
     throw error
   }
 
+  state = {
+    ...state,
+    head,
+    clientScripts,
+    clientStyleSheets,
+    clientCss,
+  }
+
   const DocumentHtml = renderToStaticMarkup(
     <DocumentTemplate
-      Html={makeHtmlWithMeta({ head })}
-      Head={
-        await makeHeadWithMeta({
-          head,
-          route,
-          clientScripts,
-          config,
-          clientStyleSheets,
-          clientCss,
-          meta: renderMeta,
-        })
-      }
-      Body={makeBodyWithMeta({
-        head,
-        route,
-        embeddedRouteInfo,
-        clientScripts,
-        config,
-      })}
-      siteData={siteData}
-      routeInfo={embeddedRouteInfo}
-      renderMeta={renderMeta}
+      Html={await makeHtmlWithMeta(state)}
+      Head={await makeHeadWithMeta(state)}
+      Body={await makeBodyWithMeta(state)}
+      state={state}
     >
       <div id="root" dangerouslySetInnerHTML={{ __html: appHtml }} />
     </DocumentTemplate>
@@ -234,12 +230,7 @@ export default (async function exportRoute({
   // Render the html for the page inside of the base document.
   let html = `<!DOCTYPE html>${DocumentHtml}`
 
-  // Rum the beforeDocumentToFile hook
-  const beforeDocumentToFile = makeHookReducer(
-    config.plugins,
-    'beforeDocumentToFile'
-  )
-  html = await beforeDocumentToFile(html, { meta: renderMeta })
+  html = await plugins.beforeDocumentToFile(html, state)
 
   // If the siteRoot is set and we're not in staging, prefix all absolute URLs
   // with the siteRoot

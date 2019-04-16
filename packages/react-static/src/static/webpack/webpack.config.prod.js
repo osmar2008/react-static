@@ -2,16 +2,19 @@ import webpack from 'webpack'
 import path from 'path'
 import CaseSensitivePathsPlugin from 'case-sensitive-paths-webpack-plugin'
 import { BundleAnalyzerPlugin } from 'webpack-bundle-analyzer'
-import UglifyJsPlugin from 'uglifyjs-webpack-plugin'
+import TerserPlugin from 'terser-webpack-plugin'
 import nodeExternals from 'webpack-node-externals'
 import ExtractCssChunks from 'extract-css-chunks-webpack-plugin'
 import OptimizeCSSAssetsPlugin from 'optimize-css-assets-webpack-plugin'
+import resolveFrom from 'resolve-from'
+//
 import rules from './rules'
 
-function common(config) {
+function common(state) {
+  const { analyze, config, debug } = state
   const { ROOT, DIST, NODE_MODULES, SRC, ASSETS } = config.paths
 
-  process.env.REACT_STATIC_ENTRY_PATH = path.resolve(ROOT, config.entry)
+  process.env.REACT_STATIC_ENTRY_PATH = config.entry
   process.env.REACT_STATIC_SITE_ROOT = config.siteRoot
   process.env.REACT_STATIC_BASE_PATH = config.basePath
   process.env.REACT_STATIC_PUBLIC_PATH = config.publicPath
@@ -67,7 +70,7 @@ function common(config) {
     mode: 'production',
     context: path.resolve(__dirname, '../../../node_modules'),
     entry: config.disableRuntime
-      ? path.resolve(ROOT, config.entry)
+      ? config.entry
       : [
           require.resolve('../../bootstrapPlugins'),
           require.resolve('../../bootstrapTemplates'),
@@ -83,14 +86,28 @@ function common(config) {
       sideEffects: true,
       minimize: true,
       minimizer: [
-        new UglifyJsPlugin({
+        new TerserPlugin({
           cache: true,
           parallel: true,
-          sourceMap: true, // set to true if you want JS source maps
+          exclude: /\.min\.js/,
+          ...config.terser,
+          sourceMap:
+            config.productionSourceMaps || config.terser.sourceMap || debug,
+          terserOptions: {
+            ie8: false,
+            ...config.terser.terserOptions,
+            mangle: { safari10: true, ...config.terser.terserOptions.mangle },
+            parse: { ecma: 8, ...config.terser.terserOptions.parse },
+            compress: { ecma: 5, ...config.terser.terserOptions.compress },
+            output: { ecma: 5, ...config.terser.terserOptions.output },
+          },
         }),
         new OptimizeCSSAssetsPlugin({}),
       ],
       splitChunks,
+    },
+    performance: {
+      maxEntrypointSize: 300000,
     },
     module: {
       rules: rules({ config, stage: 'prod', isNode: false }),
@@ -98,19 +115,23 @@ function common(config) {
     },
     resolve: {
       modules: [
-        ...[
-          SRC,
-          NODE_MODULES,
-          path.resolve(__dirname, '../../../node_modules'),
-          DIST,
-        ].map(d =>
-          DIST.startsWith(ROOT)
-            ? path.relative(process.cwd(), d)
-            : path.resolve(d)
+        NODE_MODULES,
+        SRC,
+        DIST,
+        ...[NODE_MODULES, SRC, DIST].map(d =>
+          DIST.startsWith(ROOT) ? path.relative(__dirname, d) : path.resolve(d)
         ),
         'node_modules',
       ],
       extensions: ['.wasm', '.mjs', '.js', '.json', '.jsx'],
+      alias: {
+        react: resolveFrom(config.paths.NODE_MODULES, 'react'),
+        'react-dom': resolveFrom(config.paths.NODE_MODULES, 'react-dom'),
+        'react-universal-component': resolveFrom(
+          __dirname,
+          'react-universal-component'
+        ),
+      },
     },
     externals: [],
     target: undefined,
@@ -118,32 +139,45 @@ function common(config) {
       new webpack.EnvironmentPlugin(process.env),
       extrackCSSChunks,
       new CaseSensitivePathsPlugin(),
-      config.bundleAnalyzer && new BundleAnalyzerPlugin(),
+      analyze && new BundleAnalyzerPlugin(),
     ].filter(d => d),
-    devtool: 'source-map',
+    devtool: debug || config.productionSourceMaps ? 'source-map' : false,
   }
 }
 
-export default function({ config, isNode }) {
-  const result = common(config)
-  if (!isNode) return result
+export default function(state) {
+  const {
+    stage,
+    config: { paths },
+  } = state
+
+  const result = common(state)
+  if (stage !== 'node') return result
 
   // Node only!!!
-  result.output.filename = 'static.[chunkHash:8].js'
+  result.output.filename = 'static-app.js'
+  result.output.path = paths.ARTIFACTS
   result.output.libraryTarget = 'umd'
   result.optimization.minimize = false
   result.optimization.minimizer = []
   result.target = 'node'
+  result.devtool = false
   result.externals = [
-    nodeExternals({
-      whitelist: [
-        'react-universal-component',
-        'webpack-flush-chunks',
-        'react-static',
-      ],
-    }),
+    new RegExp(`${paths.PLUGINS}`),
+    (context, request, callback) => {
+      const resolved = path.resolve(context, request)
+      if (
+        [/react-static(\\|\/)lib(\\|\/)browser/, /webpack-flush-chunks/].some(
+          d => d.test(resolved)
+        )
+      ) {
+        return callback(null, `commonjs ${resolved}`)
+      }
+      callback()
+    },
+    nodeExternals(),
   ]
-  result.module.rules = rules({ config, stage: 'prod', isNode: true })
+  result.module.rules = rules(state)
   result.plugins = [
     new webpack.EnvironmentPlugin(process.env),
     new CaseSensitivePathsPlugin(),

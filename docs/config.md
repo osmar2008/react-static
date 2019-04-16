@@ -10,20 +10,19 @@ A `static.config.js` file is optional, but recommended at your project root to u
 - [basePath](#basepath)
 - [stagingBasePath](#stagingbasepath)
 - [devBasePath](#devbasepath)
+- [assetsPath](#assetsPath)
 - [extractCssChunks](#extractcsschunks)
 - [inlineCss](#inlinecss)
 - [Document](#document)
-- [webpack](#webpack)
 - [devServer](#devserver)
 - [paths](#paths)
-- [onStart](#onstart)
-- [onBuild](#onbuild)
 - [bundleAnalyzer](#bundleanalyzer)
 - [outputFileRate](#outputfilerate)
 - [prefetchRate](#prefetchrate)
 - [disableDuplicateRoutesWarning](#disableDuplicateRoutesWarning)
 - [disableRoutePrefixing](#disablerouteprefixing)
 - [babelExcludes](#babelExcludes)
+- [productionSourceMaps](#productionSourceMaps)
 
 ### `getRoutes`
 
@@ -53,10 +52,7 @@ It supports the following properties:
     - `dev: Boolean` - Indicates whether you are running a development or production build.
 - `children: Array[Route]` - Routes can and should have nested routes when necessary. **Route paths are inherited as they are nested, so there is no need to repeat a path prefix in nested routes**.
 - `redirect: URL` - Setting this to a URL will perform the equivalent of a 301 redirect (as much as is possible within a static site) using `http-equiv` meta tags, canonicals, etc. **This will force the page to render only the bare minimum to perform the redirect and nothing else**.
-- `noindex: Boolean` - Set this to `true` if you do not want this route or its children indexed in your automatically generated sitemap.xml. Defaults to `false`.
-- `permalink: String` - You can optionally set this route to have a custom xml sitemap permalink by supplying it here.
-- `lastModified: String(YYYY-MM-DD)` - A string representing the date when this route was last modified in the format of `YYYY-MM-DD`.
-- `priority: Float` - An optional priority for the sitemap.xml. Defaults to `0.5`
+- Routes can also have other properties that may be used in plugins. Those properties will be listed in the plugin documentation.
 
 Example:
 
@@ -177,11 +173,11 @@ By using `extractCssChunks` option and putting code splitting at appropriate pla
 
 ### `Document`
 
-It's never been easier to customize the root document of your website! `Document` is an optional (and again, recommended) react component responsible for rendering the root of your website.
+It's never been easier to customize the root document of your website! `Document` is an optional (and again, recommended) react component responsible for rendering the HTML shell of your website.
 
 Things you may want to place here:
 
-- Custom `head` and/or `meta` tags
+- Site-wide custom `head` and/or `meta` tags
 - Site-wide analytics scripts
 - Site-wide stylesheets
 
@@ -191,14 +187,22 @@ Props
 - `Head: ReactComponent` - **Required** - An enhanced version of the default `head` tag.
 - `Body: ReactComponent` - **Required** - An enhanced version of the default `body` tag.
 - `children: ReactComponent` - **Required** - The main content of your site, including layout, routes, etc.
-- `routeInfo: Object` - All of the current route's information, including any `routeData`.
-- `siteData: Object` - Any data optionally resolved via the `getSiteData` function in this config file.
-- `renderMeta: Object` - Any data optionally set via hooks or transformers during the render process.
+- `state: Object` - The current state of the export.
+  - `routeInfo: Object` - All of the current route's information, including any `routeData`.
+  - `siteData: Object` - Any data optionally resolved via the `getSiteData` function in this config file.
+  - `renderMeta: Object` - Any data optionally set via hooks or transformers during the render process.
+  - And much more!
 
 ```javascript
 // static.config.js
 export default {
-  Document: ({ Html, Head, Body, children, siteData, renderMeta }) => (
+  Document: ({
+    Html,
+    Head,
+    Body,
+    children,
+    state: { siteData, renderMeta },
+  }) => (
     <Html lang="en-US">
       <Head>
         <meta charSet="UTF-8" />
@@ -210,9 +214,7 @@ export default {
 }
 ```
 
-### `webpack`
-
-To configure webpack, extend the build system, or make modifications, see the [Plugin API section](#plugin-api)
+Since JSX is now being used in this static.config.js file, you need to import React at the top of the file; add this: `import React from 'react'`
 
 ### `devServer`
 
@@ -254,48 +256,8 @@ export default {
     devDist: 'tmp/dev-server', // The development scratch directory.
     public: 'public', // The public directory (files copied to dist during build)
     assets: 'dist', // The output directory for bundled JS and CSS
+    buildArtifacts: 'artifacts', // The output directory for generated (internal) resources
   },
-}
-```
-
-### `onStart`
-
-A utility function that runs when the dev server starts up successfully. It provides you with the final, **readonly** devServer config object for your convenience.
-
-Example:
-
-```javascript
-// static.config.js
-export default {
-  onStart: ({ devServerConfig }) => {
-    console.log('The dev server is working!')
-  },
-}
-```
-
-### `onBuild`
-
-A utility function that runs when the a build completes successfully.
-
-Example:
-
-```javascript
-// static.config.js
-export default {
-  onBuild: async () => {
-    console.log('Everything is done building!')
-  },
-}
-```
-
-### `bundleAnalyzer`
-
-An optional `Boolean`. Set to true to serve the bundle analyzer on a production build.
-
-```javascript
-// static.config.js
-export default {
-  bundleAnalyzer: true,
 }
 ```
 
@@ -392,6 +354,19 @@ export default {
 }
 ```
 
+### `productionSourceMaps`
+
+Set this flag to `true` to include source maps in production.
+
+- Defaults to `false`
+
+```javascript
+// static.config.js
+export default {
+  productionSourceMaps: true,
+}
+```
+
 ---
 
 ## Plugin Api
@@ -402,4 +377,4 @@ React Static has tons of other customization possibilities available through the
 - Rendering pipeline customizations and transformations for React components, elements, the Document wrapper, etc.
 - Head tag injection
 
-Every React Static project can utilize the plugin API locally without needing to create a plugin by creating either `node.api.js` or `browser.api.js` files in the root of your project. See the [Plugin Documentation](https://github.com/nozzle/react-static/blob/master/docs/plugins.md) for more information!
+Every React Static project can utilize the plugin API locally without needing to create a plugin by creating either `node.api.js` or `browser.api.js` files in the root of your project. See the [Plugin Documentation](https://github.com/nozzle/react-static/tree/master/docs/plugins) for more information!

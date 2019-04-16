@@ -31,12 +31,14 @@ jest.mock('path', () => ({
   dirname: () => 'root/',
 }))
 
-jest.mock('../../utils/getDirname', () => () => './dirname/')
-
 const testConfiguration = (configuration, configurationMock) => {
   expect(configuration).toMatchObject(configurationMock)
   expect(configuration.getSiteData).toBeInstanceOf(Function)
   expect(configuration.getRoutes).toBeInstanceOf(Function)
+}
+
+const defualtConfig = {
+  packageConfig: {},
 }
 
 describe('buildConfig', () => {
@@ -54,35 +56,35 @@ describe('buildConfig', () => {
   })
 
   describe('default configuration', () => {
-    test('when REACT_STATIC_ENV is development', async () => {
+    test('when REACT_STATIC_ENV is development', () => {
       process.env.REACT_STATIC_ENV = 'development'
 
-      const configuration = await buildConfig()
+      const state = buildConfig({})
 
-      testConfiguration(configuration, defaultConfigDevelopment)
+      testConfiguration(state.config, defaultConfigDevelopment)
     })
 
-    it('when REACT_STATIC_ENV is production', async () => {
+    it('when REACT_STATIC_ENV is production', () => {
       process.env.REACT_STATIC_ENV = 'production'
 
-      const configuration = await buildConfig()
+      const state = buildConfig({})
 
-      testConfiguration(configuration, defaultConfigProduction)
+      testConfiguration(state.config, defaultConfigProduction)
     })
   })
 
-  test('REACT_STATIC_PREFETCH_RATE is set by the prefetchRate (default)', async () => {
+  test('REACT_STATIC_PREFETCH_RATE is set by the prefetchRate (default)', () => {
     process.env.REACT_STATIC_PREFETCH_RATE = null
 
-    await buildConfig()
+    buildConfig({})
 
     expect(process.env.REACT_STATIC_PREFETCH_RATE).toBe('5')
   })
 
-  test('REACT_STATIC_PREFETCH_RATE is set by the prefetchRate (from config)', async () => {
+  test('REACT_STATIC_PREFETCH_RATE is set by the prefetchRate (from config)', () => {
     process.env.REACT_STATIC_PREFETCH_RATE = null
 
-    await buildConfig({ prefetchRate: 10 })
+    buildConfig({}, { prefetchRate: 10 })
 
     expect(process.env.REACT_STATIC_PREFETCH_RATE).toBe('10')
   })
@@ -100,6 +102,7 @@ describe('getConfig', () => {
   let spyProcess
 
   beforeEach(() => {
+    mockPlugin.mockReset()
     spyProcess = jest.spyOn(process, 'cwd').mockImplementation(() => './root/')
   })
 
@@ -107,29 +110,38 @@ describe('getConfig', () => {
     it('should return a configuration using default file', async () => {
       // mapped by the moduleNameMapper in package.js -> src/static/__mocks__/static.config.js
       // default path is 'static.config.js'
-      const configuration = await getConfig()
+      const state = getConfig(defualtConfig)
 
-      testConfiguration(configuration, defaultConfigProduction)
+      testConfiguration(state.config, defaultConfigProduction)
     })
   })
 
   describe('when provided a path to configuration', () => {
-    it('should return a configuration using file provided', async () => {
-      // mapped by the moduleNameMapper in package.json -> src/static/__mocks__/static.config.js
-      const configuration = await getConfig('./path/to/static.config.js')
+    it('should find the configuration file using any supported extension', async () => {
+      // mapped by the moduleNameMapper in package.json -> src/static/__mocks__/static.config.jsx
+      const state = getConfig({ configPath: './path/to/static.config' })
 
-      testConfiguration(configuration, {
-        ...defaultConfigProduction,
-        entry: 'path/to/entry/index.js',
-      })
+      testConfiguration(state.config, defaultConfigProduction)
+      expect(state.config.Document).toBeInstanceOf(Function) // React component
     })
 
     it('should pass on plugin options to those plugins', async () => {
-      mockPlugin.mockReset()
       // mapped by the moduleNameMapper in package.json -> src/static/__mocks__/configWithPluginWithOptions.mock.js
-      await getConfig('./path/to/configWithPluginWithOptions.mock.js')
+      getConfig({ configPath: './path/to/configWithPluginWithOptions.mock.js' })
 
       expect(mockPlugin.mock.calls[0]).toEqual([{ mockOption: 'some-option' }])
+    })
+  })
+
+  describe('when called with an asynchronous plugin', () => {
+    it('should throw an error', () => {
+      mockPlugin.mockImplementation(() => ({
+        afterGetConfig: config => Promise.resolve(config),
+      }))
+
+      expect(() => getConfig(defualtConfig)).toThrow(
+        'Expected hook to return a value, but received promise instead. A plugin is attempting to use a sync plugin with an async function!'
+      )
     })
   })
 
